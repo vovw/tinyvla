@@ -15,6 +15,7 @@ Key techniques from VLA-0:
     - Masked Action Augmentation: Randomly mask digits → force visual reasoning
     - Data Augmentation: Random crop + color jitter
     - Action Ensembling: Average overlapping predictions for smoother control
+    - Per-task Normalization: Learn action bounds per task for better discretization
 """
 
 import argparse
@@ -131,7 +132,10 @@ class NumberSpaceOnlyProcessor:
 # =============================================================================
 
 class ActionTokenizer:
-    """Convert between continuous actions and discretized text."""
+    """Convert between continuous actions and discretized text.
+
+    Supports per-task normalization: each task can have its own action bounds.
+    """
 
     def __init__(self, num_bins: int = 1000, mask_prob: float = 0.4,
                  horizon: int = 8, action_dim: int = 7):
@@ -140,19 +144,41 @@ class ActionTokenizer:
         self.horizon = horizon
         self.action_dim = action_dim
         self.total_values = horizon * action_dim
-        self.action_min = None
-        self.action_max = None
+        # Per-task stats: {task_key: {"min": np.array, "max": np.array}}
+        self.task_stats: Dict[str, Dict[str, np.ndarray]] = {}
+        # Fallback global stats
+        self.global_min = None
+        self.global_max = None
 
     def set_stats(self, action_min: np.ndarray, action_max: np.ndarray):
-        self.action_min = action_min.astype(np.float32)
-        self.action_max = action_max.astype(np.float32)
+        """Set global fallback stats."""
+        self.global_min = action_min.astype(np.float32)
+        self.global_max = action_max.astype(np.float32)
 
-    def encode(self, actions: np.ndarray, mask: bool = False) -> str:
-        """Encode actions to text."""
-        if self.action_min is None:
+    def set_task_stats(self, task_key: str, action_min: np.ndarray, action_max: np.ndarray):
+        """Set per-task normalization bounds."""
+        self.task_stats[task_key] = {
+            "min": action_min.astype(np.float32),
+            "max": action_max.astype(np.float32),
+        }
+
+    def _get_bounds(self, task_key: Optional[str] = None):
+        """Get min/max bounds for a task, falling back to global."""
+        if task_key and task_key in self.task_stats:
+            stats = self.task_stats[task_key]
+            return stats["min"], stats["max"]
+        if self.global_min is not None:
+            return self.global_min, self.global_max
+        return None, None
+
+    def encode(self, actions: np.ndarray, mask: bool = False, task_key: Optional[str] = None) -> str:
+        """Encode actions to text using per-task normalization."""
+        action_min, action_max = self._get_bounds(task_key)
+
+        if action_min is None:
             normalized = (actions + 1) / 2
         else:
-            normalized = (actions - self.action_min) / (self.action_max - self.action_min + 1e-8)
+            normalized = (actions - action_min) / (action_max - action_min + 1e-8)
 
         binned = np.round(normalized * self.num_bins).astype(int)
         binned = np.clip(binned, 0, self.num_bins)
@@ -163,8 +189,8 @@ class ActionTokenizer:
 
         return text
 
-    def decode(self, text: str) -> np.ndarray:
-        """Decode text to actions."""
+    def decode(self, text: str, task_key: Optional[str] = None) -> np.ndarray:
+        """Decode text to actions using per-task normalization."""
         ints = []
         for token in text.strip().split():
             try:
@@ -183,10 +209,12 @@ class ActionTokenizer:
         normalized = np.array(ints[:self.total_values]) / self.num_bins
         normalized = normalized.reshape(self.horizon, self.action_dim)
 
-        if self.action_min is None:
+        action_min, action_max = self._get_bounds(task_key)
+
+        if action_min is None:
             actions = normalized * 2 - 1
         else:
-            actions = normalized * (self.action_max - self.action_min) + self.action_min
+            actions = normalized * (action_max - action_min) + action_min
 
         return actions.astype(np.float32)
 
@@ -387,22 +415,49 @@ class LiberoDataset(Dataset):
                 self.valid_indices.append(i)
 
     def _compute_action_stats(self):
-        sample_size = min(10000, len(self.dataset))
-        sample_indices = np.random.choice(len(self.dataset), sample_size, replace=False)
-
+        """Compute per-task action statistics for normalization."""
+        # Group actions by task
+        task_actions: Dict[str, List[np.ndarray]] = {}
         all_actions = []
-        for i in sample_indices:
-            action = self.dataset[int(i)][self.action_key]
+
+        print("Computing per-task action statistics...")
+        for i in tqdm(range(len(self.dataset)), desc="Scanning actions", leave=False):
+            sample = self.dataset[i]
+            action = sample[self.action_key]
             if isinstance(action, list):
                 action = np.array(action)
             all_actions.append(action)
 
-        all_actions = np.stack(all_actions)
-        action_min = all_actions.min(axis=0)
-        action_max = all_actions.max(axis=0)
+            # Get task key
+            if self.task_key:
+                task = sample[self.task_key]
+                if isinstance(task, bytes):
+                    task = task.decode()
+            elif self.task_index_key and self.task_descriptions:
+                task_idx = sample[self.task_index_key]
+                task = self.task_descriptions.get(task_idx, "default")
+            else:
+                task = "default"
 
-        self.tokenizer.set_stats(action_min, action_max)
-        print(f"Action range: [{action_min.min():.3f}, {action_max.max():.3f}]")
+            if task not in task_actions:
+                task_actions[task] = []
+            task_actions[task].append(action)
+
+        # Compute per-task stats
+        for task, actions in task_actions.items():
+            actions_arr = np.stack(actions)
+            task_min = actions_arr.min(axis=0)
+            task_max = actions_arr.max(axis=0)
+            self.tokenizer.set_task_stats(task, task_min, task_max)
+
+        # Also set global stats as fallback
+        all_actions = np.stack(all_actions)
+        global_min = all_actions.min(axis=0)
+        global_max = all_actions.max(axis=0)
+        self.tokenizer.set_stats(global_min, global_max)
+
+        print(f"Per-task stats: {len(task_actions)} tasks")
+        print(f"Global action range: [{global_min.min():.3f}, {global_max.max():.3f}]")
 
     def __len__(self):
         return len(self.indices)
@@ -480,7 +535,7 @@ class LiberoDataset(Dataset):
             actions.append(action)
 
         actions = np.stack(actions)
-        action_text = self.tokenizer.encode(actions, mask=self.augment)
+        action_text = self.tokenizer.encode(actions, mask=self.augment, task_key=instruction)
 
         return image, instruction, action_text, actions
 
@@ -679,7 +734,11 @@ class TinyVLA:
             clean_up_tokenization_spaces=False,
         )
 
-        actions = [self.action_tokenizer.decode(text) for text in texts]
+        # Decode with per-task normalization
+        actions = [
+            self.action_tokenizer.decode(text, task_key=instr)
+            for text, instr in zip(texts, instructions)
+        ]
         return actions, texts
 
     def save(self, path: str):
@@ -688,18 +747,27 @@ class TinyVLA:
         self.model.save_pretrained(path)
         self.processor.save_pretrained(path)
 
+        # Convert per-task stats to serializable format
+        task_stats_serializable = {}
+        for task_key, task_data in self.action_tokenizer.task_stats.items():
+            task_stats_serializable[task_key] = {
+                "min": task_data["min"].tolist(),
+                "max": task_data["max"].tolist(),
+            }
+
         stats = {
-            "action_min": self.action_tokenizer.action_min.tolist() if self.action_tokenizer.action_min is not None else None,
-            "action_max": self.action_tokenizer.action_max.tolist() if self.action_tokenizer.action_max is not None else None,
+            "global_min": self.action_tokenizer.global_min.tolist() if self.action_tokenizer.global_min is not None else None,
+            "global_max": self.action_tokenizer.global_max.tolist() if self.action_tokenizer.global_max is not None else None,
+            "task_stats": task_stats_serializable,
             "horizon": self.horizon,
             "action_dim": self.action_dim,
             "num_bins": self.num_bins,
             "tile_images": self.tile_images,
         }
         with open(path / "action_stats.json", "w") as f:
-            json.dump(stats, f)
+            json.dump(stats, f, indent=2)
 
-        print(f"Saved to {path}")
+        print(f"Saved to {path} ({len(task_stats_serializable)} task stats)")
 
     def load(self, path: str):
         path = Path(path)
@@ -708,12 +776,27 @@ class TinyVLA:
         if stats_path.exists():
             with open(stats_path) as f:
                 stats = json.load(f)
-            if stats.get("action_min"):
+
+            # Load global stats (check both old and new key names for backwards compat)
+            global_min = stats.get("global_min") or stats.get("action_min")
+            global_max = stats.get("global_max") or stats.get("action_max")
+            if global_min:
                 self.action_tokenizer.set_stats(
-                    np.array(stats["action_min"]),
-                    np.array(stats["action_max"]),
+                    np.array(global_min),
+                    np.array(global_max),
                 )
+
+            # Load per-task stats
+            task_stats = stats.get("task_stats", {})
+            for task_key, task_data in task_stats.items():
+                self.action_tokenizer.set_task_stats(
+                    task_key,
+                    np.array(task_data["min"]),
+                    np.array(task_data["max"]),
+                )
+
             self.tile_images = stats.get("tile_images", True)
+            print(f"Loaded {len(task_stats)} per-task action stats")
 
         adapter_config = path / "adapter_config.json"
         if adapter_config.exists():
