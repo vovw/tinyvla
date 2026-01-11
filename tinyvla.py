@@ -66,10 +66,11 @@ lora_target_modules = ("q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_
 
 # training
 num_epochs = 24  # VLA-0 paper default (single-GPU in this script)
-batch_size = 8  # per GPU, use 16 on A100 80GB
+batch_size = 8  # per GPU, use 48 on B200, 16 on A100 80GB
 learning_rate = 5e-6  # VLA-0 default (scaled by num_gpus in multi-gpu)
 weight_decay = 1e-10
 grad_clip = 1.0
+grad_accum_steps = 1  # gradient accumulation steps (effective_batch = batch_size * grad_accum_steps)
 num_workers = 8
 
 # augmentation (VLA-0 defaults)
@@ -423,9 +424,6 @@ def train():
     print(f"Dataset: {len(dataset)} samples, {len(loader)} batches")
     print(f"Batch size: {batch_size}")
 
-    # Optimizer
-    optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
-
     # Resume from checkpoint
     epoch_start = 0
     best_loss = float("inf")
@@ -436,7 +434,7 @@ def train():
             print(f"Resuming from {ckpt_path}")
             ckpt = torch.load(ckpt_path, map_location=device)
 
-            # Load model weights
+            # Load model weights FIRST
             model_path = f"{out_dir}/model_last"
             if os.path.exists(model_path):
                 from transformers import Qwen2_5_VLForConditionalGeneration
@@ -455,12 +453,16 @@ def train():
                 if compile:
                     model = torch.compile(model)
 
-            optimizer.load_state_dict(ckpt["optimizer"])
             epoch_start = ckpt["epoch"] + 1
             best_loss = ckpt.get("best_loss", float("inf"))
             print(f"Resumed at epoch {epoch_start}, best_loss={best_loss:.4f}")
         else:
             print(f"No checkpoint found at {ckpt_path}, starting from scratch")
+
+    # Optimizer - create AFTER model is finalized (important for resume)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
+    if init_from == "resume" and os.path.exists(f"{out_dir}/ckpt.pt"):
+        optimizer.load_state_dict(ckpt["optimizer"])
 
     # Wandb
     if wandb_log:
@@ -470,42 +472,65 @@ def train():
     # Training loop
     model.train()
     t0 = time.time()
-    global_step = epoch_start * len(loader)
+    step_t0 = time.time()
+    global_step = epoch_start * len(loader) // grad_accum_steps
+    optimizer.zero_grad()
+    tokens_processed = 0
+
+    print(f"Gradient accumulation steps: {grad_accum_steps}")
+    print(f"Effective batch size: {batch_size * grad_accum_steps}")
 
     for epoch in range(epoch_start, num_epochs):
         pbar = tqdm(loader, desc=f"Epoch {epoch+1}/{num_epochs}")
         epoch_loss = 0.0
         n_batches = 0
+        accum_loss = 0.0
 
-        for batch in pbar:
+        for batch_idx, batch in enumerate(pbar):
             # Move to device
             batch = {k: v.to(device) if torch.is_tensor(v) else v for k, v in batch.items()}
 
             with ctx:
                 outputs = model(**batch)
-                loss = outputs.loss
+                loss = outputs.loss / grad_accum_steps  # Scale for accumulation
 
-            optimizer.zero_grad()
             loss.backward()
+            accum_loss += loss.item()
+            tokens_processed += batch["input_ids"].numel()
 
-            if grad_clip > 0:
-                torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
+            # Step optimizer after accumulating gradients
+            if (batch_idx + 1) % grad_accum_steps == 0:
+                if grad_clip > 0:
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
+                optimizer.step()
+                optimizer.zero_grad()
+                global_step += 1
 
-            optimizer.step()
+                # Log to wandb with throughput metrics
+                if global_step % log_interval == 0 and wandb_log:
+                    import wandb
+                    step_dt = time.time() - step_t0
+                    samples_per_sec = (batch_size * grad_accum_steps * log_interval) / step_dt
+                    tokens_per_sec = tokens_processed / step_dt
 
-            epoch_loss += loss.item()
+                    wandb.log({
+                        "train/loss": accum_loss * grad_accum_steps,
+                        "train/epoch": epoch + (batch_idx + 1) / len(loader),
+                        "train/lr": learning_rate,
+                        "train/global_step": global_step,
+                        "perf/samples_per_sec": samples_per_sec,
+                        "perf/tokens_per_sec": tokens_per_sec,
+                        "perf/gpu_mem_gb": torch.cuda.max_memory_allocated() / 1e9 if torch.cuda.is_available() else 0,
+                    }, step=global_step)
+
+                    step_t0 = time.time()
+                    tokens_processed = 0
+
+                accum_loss = 0.0
+
+            epoch_loss += loss.item() * grad_accum_steps
             n_batches += 1
-            global_step += 1
-
             pbar.set_postfix(loss=f"{epoch_loss/n_batches:.4f}")
-
-            if global_step % log_interval == 0 and wandb_log:
-                import wandb
-                wandb.log({
-                    "train/loss": loss.item(),
-                    "train/epoch": epoch + n_batches / len(loader),
-                    "train/lr": learning_rate,
-                }, step=global_step)
 
         avg_loss = epoch_loss / n_batches
         dt = time.time() - t0
@@ -633,9 +658,13 @@ def evaluate(checkpoint_path, suite="libero_spatial", n_episodes=50):
         # Decode to actions
         try:
             tokens = [int(x) for x in action_text.strip().split()]
+            if len(tokens) < horizon * action_dim:
+                print(f"Warning: Expected {horizon * action_dim} tokens, got {len(tokens)}: '{action_text[:50]}...'")
+                tokens = tokens + [500] * (horizon * action_dim - len(tokens))  # Pad with neutral
             actions = np.array(tokens[:horizon * action_dim]).reshape(horizon, action_dim)
             actions = (actions / num_bins) * (action_max - action_min) + action_min
-        except:
+        except (ValueError, IndexError) as e:
+            print(f"Warning: Failed to parse action text: {e}, text='{action_text[:50]}...'")
             actions = np.zeros((horizon, action_dim))
 
         return actions
@@ -680,7 +709,7 @@ def evaluate(checkpoint_path, suite="libero_spatial", n_episodes=50):
             env.reset()
             obs = env.set_init_state(init_states[ep])
 
-            action_buffer = []
+            action_buffer = []  # List of (start_step, actions) tuples
             action_i = 0
             action_horizon = horizon  # Match VLA-0: execute full horizon before re-query
             done = False
@@ -693,17 +722,17 @@ def evaluate(checkpoint_path, suite="libero_spatial", n_episodes=50):
                 if action_i >= action_horizon or step == 0:
                     image = preprocess_obs(obs)
                     actions = predict(image, instruction)
-                    action_buffer.append(actions)
+                    action_buffer.append((step, actions))  # Track when prediction was made
                     if len(action_buffer) > 8:
                         action_buffer.pop(0)
                     action_i = 0
 
-                # Ensemble: average overlapping predictions
+                # Ensemble: average overlapping predictions for current step
                 ensemble_actions = []
-                for i, buf in enumerate(action_buffer):
-                    t = len(action_buffer) - 1 - i
-                    if t < len(buf):
-                        ensemble_actions.append(buf[t])
+                for pred_step, pred_actions in action_buffer:
+                    idx = step - pred_step  # Index into this prediction
+                    if 0 <= idx < len(pred_actions):
+                        ensemble_actions.append(pred_actions[idx])
 
                 action = np.mean(ensemble_actions, axis=0) if ensemble_actions else np.zeros(action_dim)
                 action[-1] = 1.0 if action[-1] > 0 else -1.0  # Gripper binary
@@ -723,13 +752,45 @@ def evaluate(checkpoint_path, suite="libero_spatial", n_episodes=50):
         total_episodes += len(successes)
         print(f"  Success: {rate:.1f}%")
 
+    mean_success = np.mean(list(results.values()))
+
     print(f"\n{'='*60}")
     print(f"Results - {suite}")
     print(f"{'='*60}")
     for name, rate in results.items():
         print(f"  {name[:45]:45s} {rate:5.1f}%")
     print(f"{'='*60}")
-    print(f"Mean: {np.mean(list(results.values())):.1f}%")
+    print(f"Mean: {mean_success:.1f}%")
+
+    # Log to wandb
+    if wandb_log:
+        import wandb
+        wandb.init(project=wandb_project, name=f"{wandb_run_name}-eval-{suite}", config={
+            "checkpoint": checkpoint_path,
+            "suite": suite,
+            "n_episodes": n_episodes,
+        })
+
+        # Log per-task results
+        for name, rate in results.items():
+            safe_name = name.replace(" ", "_").replace("/", "-")[:40]
+            wandb.log({f"eval/{suite}/{safe_name}": rate})
+
+        # Log summary metrics
+        wandb.log({
+            f"eval/{suite}/mean_success": mean_success,
+            f"eval/{suite}/total_episodes": total_episodes,
+            f"eval/{suite}/total_successes": total_success,
+        })
+
+        # Log results table
+        table = wandb.Table(columns=["task", "success_rate"])
+        for name, rate in results.items():
+            table.add_data(name, rate)
+        wandb.log({f"eval/{suite}/results_table": table})
+
+        wandb.finish()
+        print(f"\nResults logged to wandb: {wandb_project}/{wandb_run_name}-eval-{suite}")
 
 
 # =============================================================================
