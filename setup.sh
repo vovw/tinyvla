@@ -25,13 +25,9 @@ uv pip install torch torchvision --index-url https://download.pytorch.org/whl/cu
 echo "Installing Flash Attention..."
 uv pip install flash-attn --no-build-isolation
 
-# Install TinyVLA with eval dependencies
+# Install TinyVLA with eval + LeRobot dependencies
 echo "Installing TinyVLA..."
-uv pip install -e ".[eval]"
-
-# Install LIBERO (HuggingFace fork)
-echo "Installing LIBERO..."
-pip install git+https://github.com/huggingface/lerobot-libero.git --no-deps
+GIT_LFS_SKIP_SMUDGE=1 uv pip install -e ".[eval,lerobot]"
 
 echo ""
 echo "Setup complete! (H100 optimized)"

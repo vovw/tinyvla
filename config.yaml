@@ -1,0 +1,39 @@
+# TinyVLA Training Config
+# Usage: python tinyvla.py --config config.yaml
+
+# === Model ===
+model_id: "Qwen/Qwen2.5-VL-3B-Instruct"
+use_flash_attention: true
+
+# === Data ===
+repo_id: "physical-intelligence/libero"
+history: 1
+horizon: 8
+img_size: 224
+crop_ratio: 0.875
+tile_images: true
+
+# === Augmentation ===
+brightness_aug: 0.2
+contrast_aug: 0.2
+saturation_aug: 0.2
+hue_aug: 0.05
+action_mask_aug_pct: 0.4
+
+# === Training (SFTConfig from TRL) ===
+output_dir: "./runs/vla0"
+num_train_epochs: 32
+per_device_train_batch_size: 8
+gradient_accumulation_steps: 1
+learning_rate: 4.0e-5
+lr_scheduler_type: "constant"
+weight_decay: 1.0e-10
+max_grad_norm: 0.0
+warmup_steps: 0
+logging_steps: 10
+save_steps: 10000
+save_total_limit: 5
+bf16: true
+dataloader_num_workers: 8
+report_to: ["wandb"]
+seed: 42

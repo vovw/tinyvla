@@ -1,141 +1,107 @@
 # TinyVLA
 
-Minimal Vision-Language-Action model. Train a robot policy in **one file**.
+Train VLA-0 in **one file**. (~500 lines)
 
-Based on [VLA-0](https://arxiv.org/abs/2510.13054) — achieves state-of-the-art on LIBERO with zero architecture modifications.
+Based on [VLA-0](https://arxiv.org/abs/2510.13054) using TRL's SFTTrainer.
 
-## Quick Start
-
-```bash
-# Setup (H100 optimized, CUDA 12.4 + Flash Attention)
-./setup.sh
-source .venv/bin/activate
-
-# Train
-python tinyvla.py                           # Full training
-python tinyvla.py --test                    # Smoke test
-
-# Multi-GPU (4x H100)
-accelerate launch --num_processes 4 tinyvla.py --batch-size 16
-
-# Evaluate on LIBERO
-python tinyvla.py --eval checkpoints/final --suite libero_spatial
-```
-
-## How It Works
-
-```
-Image + Instruction  →  Qwen3-VL-2B  →  "500 234 789 120..."  →  Robot Actions
-```
-
-1. **Input**: Two camera images (agentview + wrist) + natural language instruction
-2. **VLM outputs**: Space-separated integers (0-1000) for 8 timesteps × 7 DOF = 56 numbers
-3. **Decode**: Map integers back to continuous actions using learned min/max bounds
-
-No special heads, no custom tokens, no architecture changes. Just text.
-
-## Key Techniques from VLA-0
-
-| Technique | What it does |
-|-----------|--------------|
-| **Constrained Decoding** | Only allow digits + spaces during generation → no parsing errors |
-| **Masked Action Augmentation** | Replace digits with `?` during training → forces visual reasoning |
-| **Action Ensembling** | Average overlapping predictions → smoother robot control |
-| **Per-task Normalization** | Learn action bounds from data → better discretization |
-
-## Configuration
-
-All VLA-0 defaults are tuned for LIBERO:
+## Install
 
 ```bash
-python tinyvla.py \
-  --model qwen3-2b \        # Qwen3-VL-2B (default)
-  --epochs 24 \             # Training epochs
-  --batch-size 8 \          # Batch size
-  --lr 5e-6 \               # Learning rate (full finetune)
-  --horizon 8 \             # Action prediction horizon
-  --mask-prob 0.4           # Masked augmentation probability
+uv venv --python 3.11.6 && source .venv/bin/activate
+
+# Core
+uv pip install -e .
+
+# Eval + LeRobot (LeRobot is pinned; zarr<3 keeps numpy==1.26.4 for LIBERO/robosuite)
+# Note: `GIT_LFS_SKIP_SMUDGE=1` prevents downloading large LFS assets during install.
+GIT_LFS_SKIP_SMUDGE=1 uv pip install -e ".[eval,lerobot]"
 ```
 
-### Models
-
-| Model | Size | VRAM | H100 batch size |
-|-------|------|------|-----------------|
-| `qwen3-2b` | 2.2B | ~12GB | 32+ |
-| `qwen3-4b` | 4.0B | ~18GB | 24 |
-| `qwen3-8b` | 8.0B | ~32GB | 16 |
-| `qwen2.5-3b` | 3.9B | ~24GB | 20 |
-| `qwen2.5-7b` | 7.6B | ~40GB | 12 |
-
-H100 80GB fits all models without LoRA. Use `--use-lora` on smaller GPUs.
-
-## Dataset
-
-TinyVLA uses the [LeRobot](https://github.com/huggingface/lerobot) LIBERO dataset from HuggingFace:
+## Train
 
 ```bash
-# Automatic download on first run
-python tinyvla.py  # Downloads from physical-intelligence/libero
+# Single GPU (uses TRL defaults)
+python tinyvla.py --output_dir runs/vla0
+
+# Train on one LIBERO suite only (e.g. LIBERO-Object)
+python tinyvla.py --train_suite libero_object --output_dir runs/vla0-object
+
+# Run eval automatically after training (defaults to 5 episodes per task)
+python tinyvla.py --train_suite libero_object --eval_after_train true --output_dir runs/vla0-object
+
+# LoRA (parameter-efficient)
+uv pip install -e ".[lora]"
+python tinyvla.py --use_lora true --output_dir runs/vla0-lora
+
+# With config file
+python tinyvla.py --config config.yaml
+
+# Multi-GPU
+accelerate launch --num_processes=4 tinyvla.py --output_dir runs/vla0
 ```
 
-Or use a different dataset:
-```bash
-python tinyvla.py --data-repo your-org/your-dataset
-```
-
-## Evaluation
-
-### Setup
+## Evaluate
 
 ```bash
 # Install eval dependencies
 uv pip install -e ".[eval]"
 
-# Install LIBERO (HuggingFace fork, works with modern torch)
-pip install git+https://github.com/huggingface/lerobot-libero.git --no-deps
+# Run evaluation
+python tinyvla.py --eval runs/vla0/final --suite libero_spatial
 ```
 
-### Run Evaluation
+## Config
 
-```bash
-python tinyvla.py --eval checkpoints/final --suite libero_spatial
-python tinyvla.py --eval checkpoints/final --suite libero_object
-python tinyvla.py --eval checkpoints/final --suite libero_goal
-python tinyvla.py --eval checkpoints/final --suite libero_10
+Create `config.yaml`:
+
+```yaml
+# Model
+model_id: "Qwen/Qwen2.5-VL-3B-Instruct"
+use_flash_attention: true
+
+# Data
+repo_id: "physical-intelligence/libero"
+horizon: 8
+img_size: 224
+crop_ratio: 0.875
+tile_images: true
+
+# Augmentation
+brightness_aug: 0.2
+contrast_aug: 0.2
+saturation_aug: 0.2
+hue_aug: 0.05
+action_mask_aug_pct: 0.4
+
+# Training (SFTConfig)
+output_dir: "./runs/vla0"
+num_train_epochs: 32
+per_device_train_batch_size: 8
+learning_rate: 4.0e-5
+lr_scheduler_type: "constant"
+bf16: true
+logging_steps: 10
+save_steps: 10000
+dataloader_num_workers: 8
+report_to: ["wandb"]
 ```
 
-## Project Structure
+## How It Works
 
 ```
-tinyvla/
-├── tinyvla.py      # Everything in one file (~600 lines)
-├── setup.sh        # One-command setup
-├── pyproject.toml  # Dependencies
-└── vla0/           # Reference VLA-0 implementation
+Image + Instruction → Qwen2.5-VL → "500 234 789..." → Robot Actions
 ```
 
-## Performance
+1. Two camera images tiled horizontally + task instruction
+2. VLM outputs space-separated integers (0-1000) for 8 timesteps × 7 DOF
+3. Decode integers back to continuous actions
 
-Expected results on LIBERO (from VLA-0 paper):
+Key techniques:
+- **Constrained decoding**: Only allow digits + spaces
+- **Action mask augmentation**: Replace tokens with '?' to force visual reasoning
+- **Per-task normalization**: Learn action bounds from data
 
-| Suite | Success Rate |
-|-------|--------------|
-| libero_spatial | ~85% |
-| libero_object | ~82% |
-| libero_goal | ~78% |
-| libero_10 | ~75% |
+## References
 
-## Citation
-
-```bibtex
-@article{goyal2025vla0,
-  title={VLA-0: Building State-of-the-Art VLAs with Zero Modification},
-  author={Goyal, Ankit and others},
-  journal={arXiv preprint arXiv:2510.13054},
-  year={2025}
-}
-```
-
----
-
-*Inspired by [nanoGPT](https://github.com/karpathy/nanoGPT) — making complex ideas simple.*
+- [VLA-0 Paper](https://arxiv.org/abs/2510.13054)
+- [vla0-trl](https://github.com/MilkClouds/vla0-trl)

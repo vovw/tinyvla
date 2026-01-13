@@ -1,59 +1,54 @@
-[project]
-name = "tinyvla"
-version = "0.1.0"
-description = "Minimal Vision-Language-Action model in one file"
-readme = "README.md"
-requires-python = ">=3.10"
-license = {text = "MIT"}
-
-dependencies = [
-    "torch>=2.2",
-    "torchvision",
-    "transformers>=4.45",
-    "accelerate>=0.25",
-    "peft>=0.7",
-    "pillow",
-    "tqdm",
-    "numpy",
-    "qwen-vl-utils",
-    "datasets",
-    "wandb",
-]
-
-[project.optional-dependencies]
-# LIBERO eval: install libero separately with: pip install git+https://github.com/huggingface/lerobot-libero.git --no-deps
-eval = [
-    "robosuite>=1.4",
-    "bddl>=1.0.1",
-    "h5py",
-    "easydict",
-    "einops",
-    "imageio",
-    "imageio-ffmpeg",
-]
-
-full = [
-    "tinyvla[eval]",
-    "wandb",
-    "bitsandbytes",
-    "flash-attn",
-]
-
-dev = [
-    "pytest",
-    "ruff",
-]
-
-[project.scripts]
-tinyvla = "tinyvla:main"
-
-[tool.hatch.metadata]
-allow-direct-references = true
-
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
+[project]
+name = "tinyvla"
+version = "0.1.0"
+description = "Train VLA-0 in one file"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+dependencies = [
+    "torch>=2.0.0",
+    "transformers>=4.45.0",
+    "trl>=0.8.0",
+    "accelerate>=0.25.0",
+    "qwen-vl-utils>=0.0.2",
+    "datasets>=2.19.0,<4.0.0",
+    "einops>=0.7.0",
+    "Pillow>=10.0.0",
+    "tqdm",
+    "wandb",
+    "pyyaml",
+]
+
+[project.optional-dependencies]
+flash = ["kernels"]
+lora = ["peft>=0.7"]
+eval = [
+    # `egl-probe` (via robomimic/libero) fails to build with CMake 4.x on macOS.
+    # Linux GPU boxes typically won't need this, so keep it darwin-only.
+    "cmake==3.31.10; sys_platform == 'darwin'",
+    "mujoco==3.3.2",
+    "numpy==1.26.4",
+    "libero @ git+https://github.com/MilkClouds/LIBERO.git@minor-fix",
+    "robosuite",
+    "imageio",
+    "imageio-ffmpeg",
+    "filelock",
+]
+lerobot = [
+    # Pin to the known-good LeRobot commit and skip LFS at install-time:
+    #   GIT_LFS_SKIP_SMUDGE=1 uv pip install -e ".[lerobot]"
+    "lerobot @ git+https://github.com/huggingface/lerobot.git@f39652707caed42a7cd5ab36066da5663b9565eb",
+    # LeRobot allows zarr>=2.17, but zarr 3.x pulls numpy>=2 which breaks LIBERO/robosuite stacks.
+    "zarr<3",
+]
+dev = ["pytest", "ruff"]
+
+[tool.hatch.metadata]
+allow-direct-references = true
+
 [tool.ruff]
-line-length = 100
-target-version = "py310"
+line-length = 119
