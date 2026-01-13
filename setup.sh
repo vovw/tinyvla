@@ -1,9 +1,9 @@
 #!/bin/bash
-# TinyVLA Cloud Setup - Fire and Forget Training
+# TinyVLA H100 Setup - Optimized for NVIDIA H100 GPUs
 set -e
 
-echo "TinyVLA Setup"
-echo "============="
+echo "TinyVLA H100 Setup"
+echo "=================="
 
 # Check if uv is installed
 if ! command -v uv &> /dev/null; then
@@ -14,33 +14,34 @@ fi
 
 # Create venv and install
 echo "Creating environment..."
-uv venv .venv
+uv venv .venv --python 3.11
 source .venv/bin/activate
 
-# Install PyTorch first (CUDA 12.1)
-echo "Installing PyTorch..."
-uv pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
+# Install PyTorch with CUDA 12.4 (optimal for H100)
+echo "Installing PyTorch (CUDA 12.4)..."
+uv pip install torch torchvision --index-url https://download.pytorch.org/whl/cu124
+
+# Install flash-attn (H100 has great support)
+echo "Installing Flash Attention..."
+uv pip install flash-attn --no-build-isolation
 
 # Install TinyVLA with eval dependencies
 echo "Installing TinyVLA..."
 uv pip install -e ".[eval]"
 
-# Install LIBERO
-if [ ! -d "/tmp/LIBERO" ]; then
-    echo "Installing LIBERO..."
-    git clone https://github.com/Lifelong-Robot-Learning/LIBERO.git /tmp/LIBERO
-    pip install -e /tmp/LIBERO
-fi
+# Install LIBERO (HuggingFace fork)
+echo "Installing LIBERO..."
+pip install git+https://github.com/huggingface/lerobot-libero.git --no-deps
 
 echo ""
-echo "Setup complete!"
+echo "Setup complete! (H100 optimized)"
 echo ""
 echo "Quick test:"
-echo "  python tinyvla.py --test --use-lora"
+echo "  python tinyvla.py --test"
 echo ""
-echo "Full training (fire-and-forget):"
-echo "  python tinyvla.py --epochs 32 --batch-size 8 --eval-every 8 --eval-episodes 20"
+echo "Full training (H100 80GB - no LoRA needed):"
+echo "  python tinyvla.py --epochs 24 --batch-size 16"
 echo ""
-echo "With LoRA (if OOM on <80GB GPU):"
-echo "  python tinyvla.py --epochs 32 --batch-size 8 --eval-every 8 --eval-episodes 20 --use-lora"
+echo "Multi-GPU training:"
+echo "  accelerate launch --num_processes 4 tinyvla.py --epochs 24 --batch-size 16"
 echo ""

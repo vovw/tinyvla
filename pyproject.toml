@@ -7,7 +7,7 @@ requires-python = ">=3.10"
 license = {text = "MIT"}
 
 dependencies = [
-    "torch>=2.0",
+    "torch>=2.2",
     "torchvision",
     "transformers>=4.45",
     "accelerate>=0.25",
@@ -21,9 +21,13 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# LIBERO eval: install libero separately with: pip install git+https://github.com/huggingface/lerobot-libero.git --no-deps
 eval = [
-    "libero @ git+https://github.com/Lifelong-Robot-Learning/LIBERO.git",
     "robosuite>=1.4",
+    "bddl>=1.0.1",
+    "h5py",
+    "easydict",
+    "einops",
     "imageio",
     "imageio-ffmpeg",
 ]

@@ -7,14 +7,16 @@ Based on [VLA-0](https://arxiv.org/abs/2510.13054) — achieves state-of-the-art
 ## Quick Start
 
 ```bash
-# Setup (one command)
+# Setup (H100 optimized, CUDA 12.4 + Flash Attention)
 ./setup.sh
 source .venv/bin/activate
 
 # Train
-python tinyvla.py                    # Full training (VLA-0 settings)
-python tinyvla.py --use-lora         # LoRA mode (less VRAM)
-python tinyvla.py --test             # Smoke test
+python tinyvla.py                           # Full training
+python tinyvla.py --test                    # Smoke test
+
+# Multi-GPU (4x H100)
+accelerate launch --num_processes 4 tinyvla.py --batch-size 16
 
 # Evaluate on LIBERO
 python tinyvla.py --eval checkpoints/final --suite libero_spatial
@@ -57,15 +59,15 @@ python tinyvla.py \
 
 ### Models
 
-| Model | Size | VRAM | Notes |
-|-------|------|------|-------|
-| `qwen3-2b` | 2.2B | ~12GB | **Default** - Bleeding edge, fast |
-| `qwen3-4b` | 4.0B | ~18GB | Balanced |
-| `qwen3-8b` | 8.0B | ~32GB | Best quality |
-| `qwen2.5-3b` | 3.9B | ~24GB | VLA-0 original |
-| `qwen2.5-7b` | 7.6B | ~40GB | VLA-0 large |
+| Model | Size | VRAM | H100 batch size |
+|-------|------|------|-----------------|
+| `qwen3-2b` | 2.2B | ~12GB | 32+ |
+| `qwen3-4b` | 4.0B | ~18GB | 24 |
+| `qwen3-8b` | 8.0B | ~32GB | 16 |
+| `qwen2.5-3b` | 3.9B | ~24GB | 20 |
+| `qwen2.5-7b` | 7.6B | ~40GB | 12 |
 
-Use `--use-lora` to reduce VRAM requirements by ~50%.
+H100 80GB fits all models without LoRA. Use `--use-lora` on smaller GPUs.
 
 ## Dataset
 
@@ -83,7 +85,17 @@ python tinyvla.py --data-repo your-org/your-dataset
 
 ## Evaluation
 
-Evaluate on any LIBERO suite:
+### Setup
+
+```bash
+# Install eval dependencies
+uv pip install -e ".[eval]"
+
+# Install LIBERO (HuggingFace fork, works with modern torch)
+pip install git+https://github.com/huggingface/lerobot-libero.git --no-deps
+```
+
+### Run Evaluation
 
 ```bash
 python tinyvla.py --eval checkpoints/final --suite libero_spatial
