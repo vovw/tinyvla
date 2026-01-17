@@ -1,0 +1,31 @@
+# Training (inspired by vla0-trl)
+torch>=2.1.0
+torchvision>=0.16.0
+transformers>=4.40.0
+trl>=0.8.0
+peft>=0.10.0
+accelerate>=0.30.0
+qwen-vl-utils>=0.0.2
+datasets>=2.19.0,<4.0.0
+einops>=0.7.0
+Pillow>=10.0.0
+tqdm>=4.66.0
+kernels
+wandb
+
+# LeRobot dataset wrapper (HF)
+# Note: this mirrors vla0-trl's README guidance.
+lerobot @ git+https://github.com/huggingface/lerobot.git@f39652707caed42a7cd5ab36066da5663b9565eb
+
+# ------------------------------
+# Optional: local LIBERO evaluation dependencies
+# Install these if you want `--mode eval` to run environments locally.
+#
+# IMPORTANT: MuJoCo rendering is known to break >3.3.2 for LIBERO.
+# See https://github.com/Lifelong-Robot-Learning/LIBERO/issues/88
+#
+# mujoco==3.3.2
+# numpy==1.26.4
+# libero @ git+https://github.com/MilkClouds/LIBERO.git@minor-fix
+# robosuite
+# imageio
