@@ -10,6 +10,30 @@ A simple and efficient Vision-Language-Action (VLA) model for robot manipulation
 
 ## Installation
 
+### Option A: Fast setup with `uv` (recommended)
+
+```bash
+# install uv once if needed
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# create .venv and sync dependencies from pyproject.toml
+uv sync
+
+# optional extras
+uv sync --extra flash-attn
+uv sync --extra tensorflow
+uv sync --extra libero-client
+```
+
+Run commands inside the environment:
+```bash
+uv run python e2e_train.py --help
+```
+
+> `pyproject.toml` already points `torch`/`torchvision` to CUDA 12.4 wheels.
+
+### Option B: Manual pip/conda setup
+
 ```bash
 conda create -n simvla python=3.10 -y
 conda activate simvla
@@ -51,12 +75,20 @@ python compute_libero_norm_stats.py \
 
 **Small Model Configuration:**
 ```bash
-bash train_smolvlm_small.sh
+uv run bash train_smolvlm_small.sh
 ```
 
 **Large Model Configuration:**
 ```bash
-bash train_smolvlm_large.sh
+uv run bash train_smolvlm_large.sh
+```
+
+**Single-command E2E training (prep + train):**
+```bash
+uv run python e2e_train.py \
+    --size small \
+    --data_dir ./datasets/metas \
+    --gpus "0,1,2,3"
 ```
 
 ### 5. Evaluation
@@ -88,5 +120,4 @@ If you find our codes useful, please consider citing our work
   year={2026}
 }
 ```
-
 
