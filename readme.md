@@ -97,6 +97,31 @@ uv run python e2e_train.py \
 cd evaluation/libero
 ```
 
+Unified wrapper from repo root:
+
+```bash
+# 1) start server (SimVLA env)
+uv run python e2e_eval.py serve \
+    --checkpoint ./runs/simvla_libero_small/ckpt-20000 \
+    --norm_stats ./norm_stats/libero_norm.json \
+    --port 8102
+
+# 2) run one suite (LIBERO env)
+python e2e_eval.py client \
+    --python-bin python \
+    --host 127.0.0.1 \
+    --port 8102 \
+    --task_suite libero_spatial \
+    --num_trials 10
+
+# 3) run all 4 suites in parallel
+python e2e_eval.py all \
+    --port 8102 \
+    --num_trials 10 \
+    --output_prefix eval_simvla_20k \
+    --gpus "0 1 2 3"
+```
+
 ### 6. Results
 
 <img width="506" height="1220" alt="image" src="https://github.com/user-attachments/assets/6ee1cd5e-42c5-4cf7-9cce-6dc04c1a215f" />
@@ -120,4 +145,3 @@ If you find our codes useful, please consider citing our work
   year={2026}
 }
 ```
-
