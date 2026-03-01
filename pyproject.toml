@@ -52,3 +52,10 @@ torchvision = [{ index = "pytorch-cu124" }]
 
 [tool.uv.extra-build-dependencies]
 flash-attn = ["packaging", "wheel", "setuptools>=70.1", "torch"]
+
+[tool.setuptools]
+include-package-data = false
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["models*", "datasets*"]
