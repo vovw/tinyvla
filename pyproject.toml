@@ -48,3 +48,6 @@ url = "https://download.pytorch.org/whl/cu124"
 [tool.uv.sources]
 torch = [{ index = "pytorch-cu124" }]
 torchvision = [{ index = "pytorch-cu124" }]
+
+[tool.uv.extra-build-dependencies]
+flash-attn = ["packaging"]
